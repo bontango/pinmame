@@ -46,10 +46,11 @@ unsigned char lisy35_has_own_sounds = 0;   //play own sounds rather then usinig 
 unsigned char StarShip_has_own_sounds = 0; //play StarShip sounds
 t_stru_lisy35_sounds_csv lisy35_sound_stru[256];
 
-//internal switch Matrix for system1, we need 7 elements
+//internal switch Matrix for Bally, we need 9 elements
 //as pinmame internal starts with 1
 //swMatrix 6 for SLAM and other special switches
-unsigned char swMatrixLISY35[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+unsigned char swMatrixLISY35[9] = { 0,0,0,0,0,0,0,0,0 };   //pinmame view
+unsigned char swMatrixLISY35PIC[9] = { 0,0,0,0,0,0,0,0,0 }; //PIC view
 
 //for special cases, where pins are doings strobes
 //we need to be aware and filter out
@@ -658,62 +659,169 @@ lisy35_display_handler(int index, int value) {
 
 } //display_handler
 
+
+/*
+  switch update
+  called from by35.c appr. each 20ms
+  update internal view to pinmame view
+*/
+void lisy35_switch_update(void)
+{
+unsigned char lisy_switch;
+int sys35strobe;
+static int simulate_coin_flag = 0;
+
+//pull matrixbytes for all strobes
+//and update internal matrix
+ for(sys35strobe=0; sys35strobe<9; sys35strobe++)
+ {
+  if ( ( LISY_SW_BufferOut( sys35strobe, &lisy_switch) == LISY_SW_BUFFER_SUCCESS))
+	{
+	swMatrixLISY35[sys35strobe] = lisy_switch;
+        if ( ls80dbg.bitv.switches )
+         {
+	   sprintf(debugbuf,"PULL strobe:%d data:%d",sys35strobe,lisy_switch);
+	   lisy80_debug(debugbuf);
+         }
+	}
+ } //all strobes
+
+//do we need a 'special' routine to handle that switch?
+//system35 Test switch is separate but mapped to strobe:6 ret:7
+//so matrix 7,7 to check
+if ( CHECK_BIT(swMatrixLISY35[7],7)) //is bit set?
+ {
+    //after 3 secs we initiate shutdown; internal timer 0
+    //def lisy_timer( unsigned int duration, int command, int index)
+    if ( lisy_timer( 3000, 0, 0)) lisy_time_to_quit_flag = 1;
+ }
+ else // bit is zero, reset timer index 0
+ {
+    lisy_timer( 0, 1, 0);
+ }
+
+if (ls80opt.bitv.freeplay == 1) //only if freeplay option is set
+{
+//system35 (Credit) Replay switch strobe:0 ret:5, so matrix 1,5 to check
+
+//set volume each time replay is pressed
+if ( lisy35_has_soundcard )
+{
+ if ( CHECK_BIT(swMatrixLISY35[1],5)) //is bit set?
+         {
+          lisy_adjust_volume();
+          if ( ls80dbg.bitv.basic) lisy80_debug("Volume setting initiated by REPLAY Switch");
+         }
+}
+
+
+ if ( CHECK_BIT(swMatrixLISY35[1],5)) //is bit set?
+ {
+    //after 2 secs we simulate coin insert via Chute#1; internal timer 1
+    //def lisy_timer( unsigned int duration, int command, int index)
+    if ( lisy_timer( 2000, 0, 1)) { simulate_coin_flag = 1;  lisy_timer( 0, 1, 1); }
+ }
+ else // bit is zero, reset timer index 0
+ {
+    lisy_timer( 0, 1, 1);
+ }
+
+//do we need to simalte coin insert?
+ if ( simulate_coin_flag )
+ {
+    //simulate coin insert for 50 millisecs via timer 2
+    // chute#1 is switch10; strobe 1 ret 2, so matrix is 2,2 to set
+    // chute#1 Stern is switch1; strobe 0 ret 0, so matrix is 1,0 to set
+    //def lisy_timer( unsigned int duration, int command, int index)
+      if (core_gameData->gen & (GEN_STMPU200|GEN_STMPU100))
+         SET_BIT(swMatrixLISY35[1],0);
+      else 
+         SET_BIT(swMatrixLISY35[2],2);
+     if ( lisy_timer( 50, 0, 2)) { 
+      if (core_gameData->gen & (GEN_STMPU200|GEN_STMPU100))
+	{
+	CLEAR_BIT(swMatrixLISY35[2],2);
+	if ( ls80dbg.bitv.basic) lisy80_debug("Stern coin simulated due to push&hold REPLAY Switch");
+	}
+      else
+	{
+	CLEAR_BIT(swMatrixLISY35[2],2);
+	if ( ls80dbg.bitv.basic) lisy80_debug("Bally coin simulated due to push&hold REPLAY Switch");
+	}
+	simulate_coin_flag = 0;
+	}
+ }
+ else // bit is zero, reset timer index 0
+ {
+    lisy_timer( 0, 1, 2);
+ }
+} //freeplay option set
+}
+
 /*
   switch handler
+  called from by35.c in a range of 1..10ms (depnding on system load)
   give back the value of the pinmame Matrix byte
   swMatrix[0] is pinmame internal (sound?)
   swMatrix[1..6] is bally,
   swMatrix[7] is  'special switches' bit7:Test; bit6:S33;
+  *
+  we give back internal matrix byte  here
 */
-unsigned char
-lisy35_switch_handler(int sys35col) {
-    int ret;
-    unsigned char strobe, returnval, action;
-    static int simulate_coin_flag = 0;
-    int sys35strobe = 1;
+unsigned char lisy35_switch_handler( int sys35col )
+{
+int ret;
+unsigned char strobe,returnval,action;
+int sys35strobe = 1;
 
-    //get the truth strobe
-    if (sys35col) {
-        while ((sys35col & 0x01) == 0) {
-            sys35col >>= 1;
-            sys35strobe += 1;
-        }
+
+//get the truth strobe
+  if (sys35col) {
+    while ((sys35col & 0x01) == 0) {
+      sys35col >>= 1;
+      sys35strobe += 1;
     }
+  }
 
-    //read values from pic
-    //check if there is an update first
-    ret = lisy35_switch_reader(&action);
-    //if debug mode is set we get our reedings from udp switchreader in additon
-    //but do not overwrite real switches
-    if ((ls80dbg.bitv.basic) & (ret == 80)) {
-        if ((ret = lisy_udp_switch_reader(&action, 0)) != 80) {
-            sprintf(debugbuf, "LISY35 Switch_reader: (UDP Server Data received: %d", ret);
-            lisy80_debug(debugbuf);
-            //we start internally with 0, so substract one
-            --ret;
+//read values from pic
+//check if there is an update first
+ret = lisy35_switch_reader( &action );
+//if debug mode is set we get our reedings from udp switchreader in additon
+//but do not overwrite real switches
+if ( ( ls80dbg.bitv.basic ) & ( ret == 80)) 
+ {
+   if ( ( ret = lisy_udp_switch_reader( &action, 0 )) != 80)
+   {
+     sprintf(debugbuf,"LISY35 Switch_reader: (UDP Server Data received: %d",ret);
+     lisy80_debug(debugbuf);
+     //we start internally with 0, so substract one
+     --ret;
+   }
+ }
+
+ //running on Starship? switchnumber has to be increased
+ if (( lisy_hardware_revision == 200 ) & ( ret != 80 ))
+		 lisy_home_ss_event_handler( LISY_HOME_SS_EVENT_SWITCH, ret+1, action, 0);
+
+//ignore credit switch if we running on Starship
+//and 2canplay lamp is ON
+if ( ( ret == 5 ) & (action == 1))
+{
+  if ( ( lisy_hardware_revision == 200 ) & ( lisy_home_ss_ignore_credit == 1))
+  {
+	ret = 80;
+
+        if ( ls80dbg.bitv.switches )
+        {
+           lisy80_debug("LISY35 Switch_reader: Ball one AND 2canplay activ: credit ignored");
         }
-    }
+  }
+}
 
-    //running on Starship? switchnumber has to be increased
-    if ((lisy_hardware_revision == 200) & (ret != 80))
-        lisy_home_ss_event_handler(LISY_HOME_SS_EVENT_SWITCH, ret + 1, action, 0);
-
-    //ignore credit switch if we running on Starship
-    //and 2canplay lamp is ON
-    if ((ret == 5) & (action == 1)) {
-        if ((lisy_hardware_revision == 200) & (lisy_home_ss_ignore_credit == 1)) {
-            ret = 80;
-
-            if (ls80dbg.bitv.switches) {
-                lisy80_debug("LISY35 Switch_reader: Ball one AND 2canplay activ: credit ignored");
-            }
-        }
-    }
-
-    //NOTE: system has has 6*8==40 switches in maximum, counting 1...48; ...
-    //we use 'internal strobe 6' to handle special switches in the same way ( TEST=49,S33=50 )
-    if (ret < 80) //ret is switchnumber
-    {
+//NOTE: system has has 6*8==40 switches in maximum, counting 1...48; ...
+//we use 'internal strobe 6' to handle special switches in the same way ( TEST=49,S33=50 )
+if (ret < 80) //ret is switchnumber
+      {
 
         //calculate strobe & return
         //Note: this is different from system80
@@ -723,86 +831,27 @@ lisy35_switch_handler(int sys35col) {
         //set the bit in the Matrix var according to action
         // action 1 means set the bit
         // any other means delete the bit
-        if (action) //set bit
-            SET_BIT(swMatrixLISY35[strobe + 1], returnval);
-        else //delete bit
-            CLEAR_BIT(swMatrixLISY35[strobe + 1], returnval);
+	//we do that on 'PIC view' matrix
+        if (action ) //set bit
+                   SET_BIT(swMatrixLISY35PIC[strobe+1],returnval);
+        else  //delete bit
+                   CLEAR_BIT(swMatrixLISY35PIC[strobe+1],returnval);
+	//and push result to fifo of this strobe
+	if ( ( LISY_SW_BufferIn( strobe+1, swMatrixLISY35PIC[strobe+1]) != LISY_SW_BUFFER_SUCCESS))
+	  fprintf(stderr,"Error: Switchbuffer full!\n");
+        else if ( ls80dbg.bitv.switches )
+         {
+	   sprintf(debugbuf,"push strobe:%d data:%d",strobe+1,swMatrixLISY35PIC[strobe+1]);
+	   lisy80_debug(debugbuf);
+         }
 
-    } //if ret < 80 => update internal matrix
+  } //if ret < 80 => update internal matrix
 
-    //do we need a 'special' routine to handle that switch?
-    //system35 Test switch is separate but mapped to strobe:6 ret:7
-    //so matrix 7,7 to check
-    if (CHECK_BIT(swMatrixLISY35[7], 7)) //is bit set?
-    {
-        //after 3 secs we initiate shutdown; internal timer 0
-        //def lisy_timer( unsigned int duration, int command, int index)
-        if (lisy_timer(3000, 0, 0))
-            lisy_time_to_quit_flag = 1;
-    } else // bit is zero, reset timer index 0
-    {
-        lisy_timer(0, 1, 0);
-    }
 
-    if (ls80opt.bitv.freeplay == 1) //only if freeplay option is set
-    {
-        //system35 (Credit) Replay switch strobe:0 ret:5, so matrix 1,5 to check
-
-        //set volume each time replay is pressed
-        if (lisy35_has_soundcard) {
-            if (CHECK_BIT(swMatrixLISY35[1], 5)) //is bit set?
-            {
-                lisy_adjust_volume();
-                if (ls80dbg.bitv.basic)
-                    lisy80_debug("Volume setting initiated by REPLAY Switch");
-            }
-        }
-
-        if (CHECK_BIT(swMatrixLISY35[1], 5)) //is bit set?
-        {
-            //after 2 secs we simulate coin insert via Chute#1; internal timer 1
-            //def lisy_timer( unsigned int duration, int command, int index)
-            if (lisy_timer(2000, 0, 1)) {
-                simulate_coin_flag = 1;
-                lisy_timer(0, 1, 1);
-            }
-        } else // bit is zero, reset timer index 0
-        {
-            lisy_timer(0, 1, 1);
-        }
-
-        //do we need to simalte coin insert?
-        if (simulate_coin_flag) {
-            //simulate coin insert for 50 millisecs via timer 2
-            // chute#1 is switch10; strobe 1 ret 2, so matrix is 2,2 to set
-            // chute#1 Stern is switch1; strobe 0 ret 0, so matrix is 1,0 to set
-            //def lisy_timer( unsigned int duration, int command, int index)
-            if (core_gameData->gen & (GEN_STMPU200 | GEN_STMPU100))
-                SET_BIT(swMatrixLISY35[1], 0);
-            else
-                SET_BIT(swMatrixLISY35[2], 2);
-            if (lisy_timer(50, 0, 2)) {
-                if (core_gameData->gen & (GEN_STMPU200 | GEN_STMPU100)) {
-                    CLEAR_BIT(swMatrixLISY35[2], 2);
-                    if (ls80dbg.bitv.basic)
-                        lisy80_debug("Stern coin simulated due to push&hold REPLAY Switch");
-                } else {
-                    CLEAR_BIT(swMatrixLISY35[2], 2);
-                    if (ls80dbg.bitv.basic)
-                        lisy80_debug("Bally coin simulated due to push&hold REPLAY Switch");
-                }
-                simulate_coin_flag = 0;
-            }
-        } else // bit is zero, reset timer index 0
-        {
-            lisy_timer(0, 1, 2);
-        }
-    } //freeplay option set
-
-    //if ( swMatrixLISY35[sys35strobe] != 0) printf("RTH back:%d\n",swMatrixLISY35[sys35strobe]);
-    //just give back Matrix-Byte, should be updated by now or next cycle
-    return (swMatrixLISY35[sys35strobe]);
+  //give back Matrix-Byte of this strobe
+  return(swMatrixLISY35[sys35strobe]);
 }
+
 
 //get the status of the 'Selftest switch' (from internal matrix)
 int

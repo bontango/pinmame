@@ -217,7 +217,7 @@ lisymini_hwlib_init(void) {
     lisy80_set_green_led(1);
 
     //init internal FIFO
-    LISY80_BufferInit();
+    LISY_SW_BufferInit();
 }
 
 //Hardware INIT LISY on APC via serial (e.g Williams)
@@ -265,7 +265,7 @@ lisyapc_hwlib_init(void) {
         lisy_api_print_hw_info();
 
     //init internal FIFO
-    LISY80_BufferInit();
+    LISY_SW_BufferInit();
 }
 
 //Hardware INIT LISY 1/35/80
@@ -422,7 +422,7 @@ lisy_hwlib_init(void) {
     lisy80_set_dp_led(1);
 
     //init internal FIFO
-    LISY80_BufferInit();
+    LISY_SW_BufferInit();
 }
 
 //shutdown lisy80 Hardware
